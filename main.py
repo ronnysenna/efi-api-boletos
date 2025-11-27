@@ -11,35 +11,47 @@ certificate_content = os.getenv('EFI_CERTIFICATE')
 if not certificate_content:
     raise Exception("Certificado EFI_CERTIFICATE não configurado!")
 
-# Normaliza quebras de linha (pode vir como \n literal ou real)
-certificate_content = certificate_content.replace('\\n', '\n')
+# Remove espaços extras e normaliza
+certificate_content = certificate_content.strip()
 
-# Separa certificado e chave privada (busca case-insensitive e com flags corretas)
-cert_match = re.search(
-    r'(-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----)',
-    certificate_content,
-    re.DOTALL | re.IGNORECASE
-)
-key_match = re.search(
-    r'(-----BEGIN (?:RSA )?PRIVATE KEY-----.*?-----END (?:RSA )?PRIVATE KEY-----)',
-    certificate_content,
-    re.DOTALL | re.IGNORECASE
-)
+# Se o certificado estiver em uma linha só, reconstrua as quebras
+if '\n' not in certificate_content:
+    # Adiciona quebras de linha nos delimitadores
+    certificate_content = certificate_content.replace('-----END CERTIFICATE-----', '-----END CERTIFICATE-----\n')
+    certificate_content = certificate_content.replace('-----BEGIN PRIVATE KEY-----', '\n-----BEGIN PRIVATE KEY-----\n')
+    certificate_content = certificate_content.replace('-----END PRIVATE KEY-----', '-----END PRIVATE KEY-----\n')
 
-if not cert_match:
-    raise Exception(f"Certificado não encontrado. Início do conteúdo: {certificate_content[:100]}...")
-if not key_match:
-    raise Exception(f"Chave privada não encontrada. Início do conteúdo: {certificate_content[:100]}...")
+# Extrai o certificado
+cert_start = certificate_content.find('-----BEGIN CERTIFICATE-----')
+cert_end = certificate_content.find('-----END CERTIFICATE-----') + len('-----END CERTIFICATE-----')
+
+# Extrai a chave privada
+key_start = certificate_content.find('-----BEGIN PRIVATE KEY-----')
+if key_start == -1:
+    key_start = certificate_content.find('-----BEGIN RSA PRIVATE KEY-----')
+key_end = certificate_content.find('-----END PRIVATE KEY-----')
+if key_end == -1:
+    key_end = certificate_content.find('-----END RSA PRIVATE KEY-----')
+if key_end != -1:
+    key_end += len('-----END PRIVATE KEY-----')
+
+if cert_start == -1 or cert_end == -1:
+    raise Exception(f"Certificado não encontrado no formato correto")
+if key_start == -1 or key_end == -1:
+    raise Exception(f"Chave privada não encontrada no formato correto")
+
+cert_content = certificate_content[cert_start:cert_end]
+key_content = certificate_content[key_start:key_end]
 
 # Salva em arquivos separados
 cert_file = '/tmp/cert.pem'
 key_file = '/tmp/key.pem'
 
 with open(cert_file, 'w') as f:
-    f.write(cert_match.group(1))
+    f.write(cert_content)
 
 with open(key_file, 'w') as f:
-    f.write(key_match.group(1))
+    f.write(key_content)
 
 # Configurações
 EFI_CLIENT_ID = os.getenv('EFI_CLIENT_ID')
@@ -81,7 +93,7 @@ async def buscar_boleto(cpf: str):
             'end_date': '2025-12-31'
         }
         
-        # Faz requisição com certificado (tupla: cert, key)
+        # Faz requisição com certificado
         response = requests.get(
             f'{BASE_URL}/v1/charges',
             headers=headers,
