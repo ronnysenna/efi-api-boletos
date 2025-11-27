@@ -4,12 +4,22 @@ import os
 
 app = FastAPI(title="API Consulta Boletos Efí")
 
-# Configuração das credenciais
+# Lê o certificado da variável de ambiente e salva em arquivo temporário
+certificate_content = os.getenv('EFI_CERTIFICATE')
+if not certificate_content:
+    raise Exception("Certificado EFI_CERTIFICATE não configurado nas variáveis de ambiente!")
+
+# Cria arquivo temporário com o certificado
+cert_path = '/tmp/certificado.pem'
+with open(cert_path, 'w') as f:
+    f.write(certificate_content)
+
+# Configura as credenciais
 credentials = {
     'client_id': os.getenv('EFI_CLIENT_ID'),
     'client_secret': os.getenv('EFI_CLIENT_SECRET'),
     'sandbox': os.getenv('EFI_SANDBOX', 'False') == 'True',
-    'certificate': '/app/certificado.pem'
+    'certificate': cert_path
 }
 
 efi = EfiPay(credentials)
