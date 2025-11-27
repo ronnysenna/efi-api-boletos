@@ -11,12 +11,25 @@ certificate_content = os.getenv('EFI_CERTIFICATE')
 if not certificate_content:
     raise Exception("Certificado EFI_CERTIFICATE não configurado!")
 
-# Separa certificado e chave privada
-cert_match = re.search(r'(-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----)', certificate_content, re.DOTALL)
-key_match = re.search(r'(-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----)', certificate_content, re.DOTALL)
+# Normaliza quebras de linha (pode vir como \n literal ou real)
+certificate_content = certificate_content.replace('\\n', '\n')
 
-if not cert_match or not key_match:
-    raise Exception("Certificado ou chave privada não encontrados no EFI_CERTIFICATE")
+# Separa certificado e chave privada (busca case-insensitive e com flags corretas)
+cert_match = re.search(
+    r'(-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----)',
+    certificate_content,
+    re.DOTALL | re.IGNORECASE
+)
+key_match = re.search(
+    r'(-----BEGIN (?:RSA )?PRIVATE KEY-----.*?-----END (?:RSA )?PRIVATE KEY-----)',
+    certificate_content,
+    re.DOTALL | re.IGNORECASE
+)
+
+if not cert_match:
+    raise Exception(f"Certificado não encontrado. Início do conteúdo: {certificate_content[:100]}...")
+if not key_match:
+    raise Exception(f"Chave privada não encontrada. Início do conteúdo: {certificate_content[:100]}...")
 
 # Salva em arquivos separados
 cert_file = '/tmp/cert.pem'
@@ -73,7 +86,7 @@ async def buscar_boleto(cpf: str):
             f'{BASE_URL}/v1/charges',
             headers=headers,
             params=params,
-            cert=(cert_file, key_file),  # ← Agora passa os dois arquivos
+            cert=(cert_file, key_file),
             timeout=30
         )
         
