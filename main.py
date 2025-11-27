@@ -2,18 +2,31 @@ from fastapi import FastAPI, HTTPException
 import requests
 import os
 import base64
+import re
 
 app = FastAPI(title="API Consulta Boletos Efí")
 
-# Lê o certificado da variável de ambiente e salva em arquivo temporário
+# Lê o certificado da variável de ambiente
 certificate_content = os.getenv('EFI_CERTIFICATE')
 if not certificate_content:
     raise Exception("Certificado EFI_CERTIFICATE não configurado!")
 
-# Cria arquivo temporário com o certificado
-cert_path = '/tmp/certificado.pem'
-with open(cert_path, 'w') as f:
-    f.write(certificate_content)
+# Separa certificado e chave privada
+cert_match = re.search(r'(-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----)', certificate_content, re.DOTALL)
+key_match = re.search(r'(-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----)', certificate_content, re.DOTALL)
+
+if not cert_match or not key_match:
+    raise Exception("Certificado ou chave privada não encontrados no EFI_CERTIFICATE")
+
+# Salva em arquivos separados
+cert_file = '/tmp/cert.pem'
+key_file = '/tmp/key.pem'
+
+with open(cert_file, 'w') as f:
+    f.write(cert_match.group(1))
+
+with open(key_file, 'w') as f:
+    f.write(key_match.group(1))
 
 # Configurações
 EFI_CLIENT_ID = os.getenv('EFI_CLIENT_ID')
@@ -43,7 +56,8 @@ async def buscar_boleto(cpf: str):
         # Headers
         headers = {
             'Authorization': f'Basic {auth_base64}',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
         }
         
         # Parâmetros
@@ -54,12 +68,12 @@ async def buscar_boleto(cpf: str):
             'end_date': '2025-12-31'
         }
         
-        # Faz requisição com certificado
+        # Faz requisição com certificado (tupla: cert, key)
         response = requests.get(
             f'{BASE_URL}/v1/charges',
             headers=headers,
             params=params,
-            cert=cert_path,
+            cert=(cert_file, key_file),  # ← Agora passa os dois arquivos
             timeout=30
         )
         
