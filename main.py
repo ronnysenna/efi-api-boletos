@@ -29,14 +29,15 @@ gn = Gerencianet(credentials)
 async def root():
     return {"message": "API Efí - Consulta de Boletos", "status": "online"}
 
-@app.get("/debug-methods")
-async def debug_methods():
-    """Lista todos os métodos disponíveis no SDK"""
+@app.get("/debug-endpoints")
+async def debug_endpoints():
+    """Mostra os endpoints disponíveis no SDK"""
     try:
-        methods = [method for method in dir(gn) if not method.startswith('_')]
+        # Acessa os endpoints internos do SDK
+        endpoints = gn.endpoints if hasattr(gn, 'endpoints') else {}
         return {
-            "available_methods": methods,
-            "credentials_configured": True
+            "available_endpoints": list(endpoints.keys()) if endpoints else "Não foi possível acessar",
+            "credentials_ok": True
         }
     except Exception as e:
         return {
@@ -44,34 +45,33 @@ async def debug_methods():
             "traceback": traceback.format_exc()
         }
 
-@app.get("/debug-charges")
-async def debug_charges():
-    """Testa diferentes formas de chamar a API"""
-    results = {}
-    
-    # Teste 1: Listar charges básico
+@app.get("/test-direct-call")
+async def test_direct_call():
+    """Testa chamada direta via request"""
     try:
-        response = gn.get_charges()
-        results['test1_basic'] = {"status": "success", "keys": list(response.keys()) if isinstance(response, dict) else type(response).__name__}
+        # Monta o endpoint manualmente
+        params = {
+            'begin_date': '2024-01-01',
+            'end_date': '2025-12-31'
+        }
+        
+        # Tenta fazer requisição direta
+        response = gn.request(
+            endpoint='get_charges',
+            params=params,
+            method='GET'
+        )
+        
+        return {
+            "status": "success",
+            "response": response
+        }
     except Exception as e:
-        results['test1_basic'] = {"status": "error", "message": str(e)}
-    
-    # Teste 2: Com parâmetros
-    try:
-        params = {'begin_date': '2024-01-01', 'end_date': '2025-12-31'}
-        response = gn.get_charges(params=params)
-        results['test2_with_params'] = {"status": "success", "keys": list(response.keys()) if isinstance(response, dict) else type(response).__name__}
-    except Exception as e:
-        results['test2_with_params'] = {"status": "error", "message": str(e)}
-    
-    # Teste 3: Direto com kwargs
-    try:
-        response = gn.get_charges(begin_date='2024-01-01', end_date='2025-12-31')
-        results['test3_kwargs'] = {"status": "success", "keys": list(response.keys()) if isinstance(response, dict) else type(response).__name__}
-    except Exception as e:
-        results['test3_kwargs'] = {"status": "error", "message": str(e)}
-    
-    return results
+        return {
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        }
 
 @app.get("/buscar-boleto/{cpf}")
 async def buscar_boleto(cpf: str):
@@ -82,24 +82,56 @@ async def buscar_boleto(cpf: str):
         if len(cpf_limpo) != 11:
             raise HTTPException(status_code=400, detail="CPF inválido")
         
-        # Parâmetros para busca
+        # Monta os parâmetros da query string
         params = {
             'begin_date': '2024-01-01',
             'end_date': '2025-12-31',
             'cpf': cpf_limpo
         }
         
-        # Tenta chamar a API
-        response = gn.get_charges(params)
+        # Chama o endpoint usando o método request
+        response = gn.request(
+            endpoint='get_charges',
+            params=params,
+            method='GET'
+        )
+        
+        # Processa a resposta
+        if not response or 'data' not in response:
+            return {
+                'cpf': cpf_limpo,
+                'total_boletos': 0,
+                'boletos': [],
+                'mensagem': 'Nenhum boleto encontrado'
+            }
+        
+        # Filtra boletos em aberto
+        boletos_abertos = []
+        for b in response.get('data', []):
+            if b.get('status') == 'waiting':
+                payment = b.get('payment', {})
+                banking_billet = payment.get('banking_billet', {})
+                pix_info = payment.get('pix', {})
+                
+                boletos_abertos.append({
+                    'charge_id': b.get('charge_id'),
+                    'valor': f"R$ {b.get('total', 0)/100:.2f}",
+                    'vencimento': b.get('expire_at', ''),
+                    'status': b.get('status'),
+                    'link': banking_billet.get('link', ''),
+                    'barcode': banking_billet.get('barcode', ''),
+                    'pix_copia_cola': pix_info.get('qrcode', '')
+                })
         
         return {
-            'raw_response': response,
-            'cpf': cpf_limpo
+            'cpf': cpf_limpo,
+            'total_boletos': len(boletos_abertos),
+            'boletos': boletos_abertos
         }
         
     except Exception as e:
         raise HTTPException(
-            status_code=500, 
+            status_code=500,
             detail=f"Erro: {str(e)}\n\nTraceback: {traceback.format_exc()}"
         )
 
