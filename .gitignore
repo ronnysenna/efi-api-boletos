@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+
+# Certificados (NUNCA commitar)
+*.pem
+*.p12
+*.crt
+*.key
+
+# Variáveis de ambiente
+.env
+
+# IDE
+.vscode/
+.idea/
