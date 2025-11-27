@@ -2,48 +2,46 @@ from fastapi import FastAPI, HTTPException
 import requests
 import os
 import base64
-import re
 
 app = FastAPI(title="API Consulta Boletos Efí")
 
 # Lê o certificado da variável de ambiente
-certificate_content = os.getenv('EFI_CERTIFICATE')
+certificate_content = os.getenv('EFI_CERTIFICATE', '')
 if not certificate_content:
     raise Exception("Certificado EFI_CERTIFICATE não configurado!")
 
-# Remove espaços extras e normaliza
+# Remove espaços e normaliza
 certificate_content = certificate_content.strip()
 
-# Se o certificado estiver em uma linha só, reconstrua as quebras
-if '\n' not in certificate_content:
-    # Adiciona quebras de linha nos delimitadores
-    certificate_content = certificate_content.replace('-----END CERTIFICATE-----', '-----END CERTIFICATE-----\n')
-    certificate_content = certificate_content.replace('-----BEGIN PRIVATE KEY-----', '\n-----BEGIN PRIVATE KEY-----\n')
-    certificate_content = certificate_content.replace('-----END PRIVATE KEY-----', '-----END PRIVATE KEY-----\n')
+# Encontra as posições dos marcadores
+markers = {
+    'cert_start': certificate_content.find('-----BEGIN CERTIFICATE-----'),
+    'cert_end': certificate_content.find('-----END CERTIFICATE-----'),
+    'key_start': max(
+        certificate_content.find('-----BEGIN PRIVATE KEY-----'),
+        certificate_content.find('-----BEGIN RSA PRIVATE KEY-----')
+    ),
+    'key_end': max(
+        certificate_content.find('-----END PRIVATE KEY-----'),
+        certificate_content.find('-----END RSA PRIVATE KEY-----')
+    )
+}
 
-# Extrai o certificado
-cert_start = certificate_content.find('-----BEGIN CERTIFICATE-----')
-cert_end = certificate_content.find('-----END CERTIFICATE-----') + len('-----END CERTIFICATE-----')
+# Valida
+if markers['cert_start'] == -1 or markers['cert_end'] == -1:
+    raise Exception(f"Certificado não encontrado. Conteúdo tem {len(certificate_content)} chars")
 
-# Extrai a chave privada
-key_start = certificate_content.find('-----BEGIN PRIVATE KEY-----')
-if key_start == -1:
-    key_start = certificate_content.find('-----BEGIN RSA PRIVATE KEY-----')
-key_end = certificate_content.find('-----END PRIVATE KEY-----')
-if key_end == -1:
-    key_end = certificate_content.find('-----END RSA PRIVATE KEY-----')
-if key_end != -1:
-    key_end += len('-----END PRIVATE KEY-----')
+if markers['key_start'] == -1 or markers['key_end'] == -1:
+    raise Exception(f"Chave privada não encontrada. Conteúdo: {certificate_content[markers['cert_end']:markers['cert_end']+100]}")
 
-if cert_start == -1 or cert_end == -1:
-    raise Exception(f"Certificado não encontrado no formato correto")
-if key_start == -1 or key_end == -1:
-    raise Exception(f"Chave privada não encontrada no formato correto")
+# Extrai (incluindo os marcadores finais)
+cert_end_marker = '-----END CERTIFICATE-----'
+key_end_marker = '-----END RSA PRIVATE KEY-----' if 'RSA' in certificate_content else '-----END PRIVATE KEY-----'
 
-cert_content = certificate_content[cert_start:cert_end]
-key_content = certificate_content[key_start:key_end]
+cert_content = certificate_content[markers['cert_start']:markers['cert_end'] + len(cert_end_marker)]
+key_content = certificate_content[markers['key_start']:markers['key_end'] + len(key_end_marker)]
 
-# Salva em arquivos separados
+# Salva em arquivos
 cert_file = '/tmp/cert.pem'
 key_file = '/tmp/key.pem'
 
@@ -57,8 +55,6 @@ with open(key_file, 'w') as f:
 EFI_CLIENT_ID = os.getenv('EFI_CLIENT_ID')
 EFI_CLIENT_SECRET = os.getenv('EFI_CLIENT_SECRET')
 EFI_SANDBOX = os.getenv('EFI_SANDBOX', 'False') == 'True'
-
-# URL base da API
 BASE_URL = 'https://api-h.efipay.com.br' if EFI_SANDBOX else 'https://api.efipay.com.br'
 
 @app.get("/")
@@ -68,24 +64,21 @@ async def root():
 @app.get("/buscar-boleto/{cpf}")
 async def buscar_boleto(cpf: str):
     try:
-        # Remove caracteres não numéricos do CPF
         cpf_limpo = ''.join(filter(str.isdigit, cpf))
         
         if len(cpf_limpo) != 11:
             raise HTTPException(status_code=400, detail="CPF inválido")
         
-        # Monta Basic Auth
+        # Basic Auth
         auth_string = f"{EFI_CLIENT_ID}:{EFI_CLIENT_SECRET}"
         auth_base64 = base64.b64encode(auth_string.encode()).decode()
         
-        # Headers
         headers = {
             'Authorization': f'Basic {auth_base64}',
             'Content-Type': 'application/json',
             'Accept': 'application/json'
         }
         
-        # Parâmetros
         params = {
             'charge_type': 'carnet',
             'customer_document': cpf_limpo,
@@ -93,7 +86,6 @@ async def buscar_boleto(cpf: str):
             'end_date': '2025-12-31'
         }
         
-        # Faz requisição com certificado
         response = requests.get(
             f'{BASE_URL}/v1/charges',
             headers=headers,
@@ -102,17 +94,15 @@ async def buscar_boleto(cpf: str):
             timeout=30
         )
         
-        # Verifica status
         if response.status_code != 200:
             return {
                 'cpf': cpf_limpo,
-                'erro': f'API retornou status {response.status_code}',
+                'erro': f'Status {response.status_code}',
                 'mensagem': response.text
             }
         
         data = response.json()
         
-        # Processa resposta
         if not data or 'data' not in data:
             return {
                 'cpf': cpf_limpo,
@@ -121,7 +111,6 @@ async def buscar_boleto(cpf: str):
                 'mensagem': 'Nenhum boleto encontrado'
             }
         
-        # Filtra boletos em aberto
         boletos_abertos = []
         for b in data.get('data', []):
             if b.get('status') == 'waiting':
@@ -146,15 +135,9 @@ async def buscar_boleto(cpf: str):
         }
         
     except requests.exceptions.RequestException as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro de conexão: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Erro de conexão: {str(e)}")
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Erro: {str(e)}")
 
 @app.get("/health")
 async def health():
