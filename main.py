@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
-from gerencianet import Gerencianet
+import requests
 import os
-import traceback
+import base64
 
 app = FastAPI(title="API Consulta Boletos Efí")
 
@@ -15,63 +15,17 @@ cert_path = '/tmp/certificado.pem'
 with open(cert_path, 'w') as f:
     f.write(certificate_content)
 
-# Configura as credenciais
-credentials = {
-    'client_id': os.getenv('EFI_CLIENT_ID'),
-    'client_secret': os.getenv('EFI_CLIENT_SECRET'),
-    'sandbox': os.getenv('EFI_SANDBOX', 'False') == 'True',
-    'certificate': cert_path
-}
+# Configurações
+EFI_CLIENT_ID = os.getenv('EFI_CLIENT_ID')
+EFI_CLIENT_SECRET = os.getenv('EFI_CLIENT_SECRET')
+EFI_SANDBOX = os.getenv('EFI_SANDBOX', 'False') == 'True'
 
-gn = Gerencianet(credentials)
+# URL base da API
+BASE_URL = 'https://api-h.efipay.com.br' if EFI_SANDBOX else 'https://api.efipay.com.br'
 
 @app.get("/")
 async def root():
     return {"message": "API Efí - Consulta de Boletos", "status": "online"}
-
-@app.get("/debug-endpoints")
-async def debug_endpoints():
-    """Mostra os endpoints disponíveis no SDK"""
-    try:
-        # Acessa os endpoints internos do SDK
-        endpoints = gn.endpoints if hasattr(gn, 'endpoints') else {}
-        return {
-            "available_endpoints": list(endpoints.keys()) if endpoints else "Não foi possível acessar",
-            "credentials_ok": True
-        }
-    except Exception as e:
-        return {
-            "error": str(e),
-            "traceback": traceback.format_exc()
-        }
-
-@app.get("/test-direct-call")
-async def test_direct_call():
-    """Testa chamada direta via request"""
-    try:
-        # Monta o endpoint manualmente
-        params = {
-            'begin_date': '2024-01-01',
-            'end_date': '2025-12-31'
-        }
-        
-        # Tenta fazer requisição direta
-        response = gn.request(
-            endpoint='get_charges',
-            params=params,
-            method='GET'
-        )
-        
-        return {
-            "status": "success",
-            "response": response
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e),
-            "traceback": traceback.format_exc()
-        }
 
 @app.get("/buscar-boleto/{cpf}")
 async def buscar_boleto(cpf: str):
@@ -82,22 +36,45 @@ async def buscar_boleto(cpf: str):
         if len(cpf_limpo) != 11:
             raise HTTPException(status_code=400, detail="CPF inválido")
         
-        # Monta os parâmetros da query string
-        params = {
-            'begin_date': '2024-01-01',
-            'end_date': '2025-12-31',
-            'cpf': cpf_limpo
+        # Monta Basic Auth
+        auth_string = f"{EFI_CLIENT_ID}:{EFI_CLIENT_SECRET}"
+        auth_base64 = base64.b64encode(auth_string.encode()).decode()
+        
+        # Headers
+        headers = {
+            'Authorization': f'Basic {auth_base64}',
+            'Content-Type': 'application/json'
         }
         
-        # Chama o endpoint usando o método request
-        response = gn.request(
-            endpoint='get_charges',
+        # Parâmetros
+        params = {
+            'charge_type': 'carnet',
+            'customer_document': cpf_limpo,
+            'begin_date': '2024-01-01',
+            'end_date': '2025-12-31'
+        }
+        
+        # Faz requisição com certificado
+        response = requests.get(
+            f'{BASE_URL}/v1/charges',
+            headers=headers,
             params=params,
-            method='GET'
+            cert=cert_path,
+            timeout=30
         )
         
-        # Processa a resposta
-        if not response or 'data' not in response:
+        # Verifica status
+        if response.status_code != 200:
+            return {
+                'cpf': cpf_limpo,
+                'erro': f'API retornou status {response.status_code}',
+                'mensagem': response.text
+            }
+        
+        data = response.json()
+        
+        # Processa resposta
+        if not data or 'data' not in data:
             return {
                 'cpf': cpf_limpo,
                 'total_boletos': 0,
@@ -107,7 +84,7 @@ async def buscar_boleto(cpf: str):
         
         # Filtra boletos em aberto
         boletos_abertos = []
-        for b in response.get('data', []):
+        for b in data.get('data', []):
             if b.get('status') == 'waiting':
                 payment = b.get('payment', {})
                 banking_billet = payment.get('banking_billet', {})
@@ -129,10 +106,15 @@ async def buscar_boleto(cpf: str):
             'boletos': boletos_abertos
         }
         
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro de conexão: {str(e)}"
+        )
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Erro: {str(e)}\n\nTraceback: {traceback.format_exc()}"
+            detail=f"Erro: {str(e)}"
         )
 
 @app.get("/health")
