@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from gerencianet import Gerencianet
 import os
+import traceback
 
 app = FastAPI(title="API Consulta Boletos Efí")
 
@@ -28,6 +29,50 @@ gn = Gerencianet(credentials)
 async def root():
     return {"message": "API Efí - Consulta de Boletos", "status": "online"}
 
+@app.get("/debug-methods")
+async def debug_methods():
+    """Lista todos os métodos disponíveis no SDK"""
+    try:
+        methods = [method for method in dir(gn) if not method.startswith('_')]
+        return {
+            "available_methods": methods,
+            "credentials_configured": True
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+@app.get("/debug-charges")
+async def debug_charges():
+    """Testa diferentes formas de chamar a API"""
+    results = {}
+    
+    # Teste 1: Listar charges básico
+    try:
+        response = gn.get_charges()
+        results['test1_basic'] = {"status": "success", "keys": list(response.keys()) if isinstance(response, dict) else type(response).__name__}
+    except Exception as e:
+        results['test1_basic'] = {"status": "error", "message": str(e)}
+    
+    # Teste 2: Com parâmetros
+    try:
+        params = {'begin_date': '2024-01-01', 'end_date': '2025-12-31'}
+        response = gn.get_charges(params=params)
+        results['test2_with_params'] = {"status": "success", "keys": list(response.keys()) if isinstance(response, dict) else type(response).__name__}
+    except Exception as e:
+        results['test2_with_params'] = {"status": "error", "message": str(e)}
+    
+    # Teste 3: Direto com kwargs
+    try:
+        response = gn.get_charges(begin_date='2024-01-01', end_date='2025-12-31')
+        results['test3_kwargs'] = {"status": "success", "keys": list(response.keys()) if isinstance(response, dict) else type(response).__name__}
+    except Exception as e:
+        results['test3_kwargs'] = {"status": "error", "message": str(e)}
+    
+    return results
+
 @app.get("/buscar-boleto/{cpf}")
 async def buscar_boleto(cpf: str):
     try:
@@ -37,51 +82,26 @@ async def buscar_boleto(cpf: str):
         if len(cpf_limpo) != 11:
             raise HTTPException(status_code=400, detail="CPF inválido")
         
-        # Parâmetros para busca na API v1
+        # Parâmetros para busca
         params = {
-            'charge_type': 'carnet',
-            'cpf': cpf_limpo,
             'begin_date': '2024-01-01',
-            'end_date': '2025-12-31'
+            'end_date': '2025-12-31',
+            'cpf': cpf_limpo
         }
         
-        # Chama o endpoint correto da API v1
-        response = gn.get_charges(params=params)
-        
-        if not response or 'data' not in response:
-            return {
-                'cpf': cpf_limpo,
-                'total_boletos': 0,
-                'boletos': [],
-                'mensagem': 'Nenhum boleto encontrado'
-            }
-        
-        # Processa os boletos retornados
-        boletos_abertos = []
-        for b in response.get('data', []):
-            if b.get('status') == 'waiting':
-                payment = b.get('payment', {})
-                banking_billet = payment.get('banking_billet', {})
-                pix_info = payment.get('pix', {})
-                
-                boletos_abertos.append({
-                    'charge_id': b.get('charge_id'),
-                    'valor': f"R$ {b.get('total', 0)/100:.2f}",
-                    'vencimento': b.get('expire_at', ''),
-                    'status': b.get('status'),
-                    'link': banking_billet.get('link', ''),
-                    'barcode': banking_billet.get('barcode', ''),
-                    'pix_copia_cola': pix_info.get('qrcode', '')
-                })
+        # Tenta chamar a API
+        response = gn.get_charges(params)
         
         return {
-            'cpf': cpf_limpo,
-            'total_boletos': len(boletos_abertos),
-            'boletos': boletos_abertos
+            'raw_response': response,
+            'cpf': cpf_limpo
         }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao consultar: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Erro: {str(e)}\n\nTraceback: {traceback.format_exc()}"
+        )
 
 @app.get("/health")
 async def health():
